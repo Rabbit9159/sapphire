@@ -19,8 +19,10 @@ import psutil
 # cache is fully warm. Arm HF offline mode BEFORE the kokoro import (hf_hub
 # reads the env at import time) — but only when the model cache already
 # exists, so first-run downloads still work. Telemetry off unconditionally.
-# A voice missing from the cache lifts offline at synth time (_synth) and
-# retries online; init failures retry the same way below.
+# A voice missing from the cache lifts offline at synth time (_synth).
+# The miss raises when the generator is first iterated, so _synth pulls
+# that item itself before the request handler walks the rest. Init
+# failures retry the same way below.
 _hf_home = os.environ.get('HF_HOME') or os.path.join(
     os.path.expanduser('~'), '.cache', 'huggingface')
 _kokoro_snaps = os.path.join(_hf_home, 'hub', 'models--hexgrad--Kokoro-82M',
@@ -34,19 +36,6 @@ if _kokoro_cached:
 os.environ.setdefault('HF_HUB_DISABLE_TELEMETRY', '1')
 
 
-def _hf_go_online():
-    """Lift HF offline mode for the rest of this process (a restart
-    re-arms). hf_hub modules may bind the flag as a module global at
-    import, so flip env AND every huggingface_hub module attr."""
-    os.environ['HF_HUB_OFFLINE'] = '0'
-    for _name, _mod in list(sys.modules.items()):
-        if _name.startswith('huggingface_hub') and hasattr(_mod, 'HF_HUB_OFFLINE'):
-            try:
-                _mod.HF_HUB_OFFLINE = False
-            except Exception:
-                pass
-
-
 from kokoro import KPipeline
 
 # Dump Python traceback on SIGSEGV/SIGFPE/SIGABRT to stderr
@@ -56,6 +45,8 @@ faulthandler.enable()
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(script_dir))
 sys.path.insert(0, project_root)
+
+from core.tts.hf_offline import hf_go_online as _hf_go_online, prime_generator, voice_needs_download
 
 # --- Set up logging to stderr (captured by ProcessManager into kokoro.log) ---
 logging.basicConfig(
@@ -226,22 +217,22 @@ logger.info(f"Model loaded successfully on device='{_kokoro_device}'. Using temp
 
 def _synth(text, voice, speed):
     """pipeline() with HF offline fallback (negspace E4): voices/*.pt
-    download lazily PER VOICE, so a never-used voice under offline mode
-    raises. Lift offline once, retry, stay online for process life
-    (restart re-arms). Real synth errors pass straight through."""
+    download lazily PER VOICE, on the first iteration of the generator,
+    not when pipeline() is called. prime_generator forces that iteration
+    inside this try, so a missing voice lifts offline mode and retries.
+    Stay online for process life (restart re-arms). Real synth errors
+    pass straight through."""
+    def _open():
+        return prime_generator(pipeline(text, voice=voice, speed=speed))
+
     try:
-        return pipeline(text, voice=voice, speed=speed)
+        return _open()
     except Exception as e:
-        if (os.environ.get('HF_HUB_OFFLINE') == '1'
-                and (type(e).__name__ in ('OfflineModeIsEnabled',
-                                          'LocalEntryNotFoundError',
-                                          'FileNotFoundError')
-                     or 'offline' in str(e).lower()
-                     or 'local_files_only' in str(e))):
+        if voice_needs_download(e):
             logger.info(f"[TTS] voice '{voice}' not in local cache — "
                         "lifting HF offline mode to download")
             _hf_go_online()
-            return pipeline(text, voice=voice, speed=speed)
+            return _open()
         raise
 os.makedirs(TEMP_DIR, exist_ok=True)
 
