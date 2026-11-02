@@ -92,20 +92,22 @@ def test_gemini3_nests_thoughts_so_google_is_not_a_top_level_field():
     Python SDK spreads extra_body onto the JSON root, and Google's compat
     endpoint 400s a root field named google. The documented shape is a
     literal extra_body.google object, so the kwarg is nested once more.
-    reasoning_effort stays; thinking_level would collide with it."""
+    reasoning_effort is omitted: Google 400s when it arrives beside
+    thinking_config."""
     out = _gemini("gemini-3.8-flash")._transform_params_for_model(
         {"temperature": 0.7, "max_tokens": 8192})
-    assert out["reasoning_effort"] == "medium"
+    assert "reasoning_effort" not in out
     google = out["extra_body"]["extra_body"]["google"]
-    assert google == {"thinking_config": {"include_thoughts": True}}
+    assert google == {"thinking_config": {"thinking_level": "medium", "include_thoughts": True}}
     assert "google" not in out["extra_body"]
 
 
 def test_custom_gemini3_id_uses_the_same_nested_shape():
     out = _gemini("gemini-3.5-flash", effort="low")._transform_params_for_model({})
-    assert out["reasoning_effort"] == "low"
+    assert "reasoning_effort" not in out
     assert "google" not in out["extra_body"]
-    assert out["extra_body"]["extra_body"]["google"]["thinking_config"]["include_thoughts"] is True
+    cfg = out["extra_body"]["extra_body"]["google"]["thinking_config"]
+    assert cfg == {"thinking_level": "low", "include_thoughts": True}
 
 
 def test_gemini25_sets_effort_without_the_google_block():

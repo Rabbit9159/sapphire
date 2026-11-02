@@ -3,12 +3,11 @@
 Google Gemini provider via OpenAI-compatible endpoint.
 
 Strips unsupported params (penalties, stop).
-For thinking models (2.5+), injects reasoning_effort.
-For Gemini 3+, also asks for thought summaries. Those ride a literal
-`extra_body.google` field on the wire — the OpenAI SDK merges its
-`extra_body` kwarg into the JSON root, so the block is nested once
-more here. A top-level `google` field is rejected with
-400 Unknown name "google": Cannot find field.
+Gemini 2.5 thinking uses reasoning_effort.
+Gemini 3 thinking uses extra_body.google.thinking_config instead.
+Google rejects a request that contains both, and it rejects a top-level
+`google` field. The OpenAI SDK merges its extra_body kwarg into the JSON
+root, so the google block is nested once more here.
 """
 
 import logging
@@ -19,6 +18,9 @@ from .openai_compat import OpenAICompatProvider
 logger = logging.getLogger(__name__)
 
 GEMINI_THINKING_PREFIXES = ('gemini-2.5', 'gemini-3')
+# Gemini 3 accepts these thinking_level values. Anything else falls back
+# to medium so an unknown effort string cannot 400 the request.
+GEMINI_3_LEVELS = ('minimal', 'low', 'medium', 'high')
 
 
 class GeminiProvider(OpenAICompatProvider):
@@ -42,21 +44,26 @@ class GeminiProvider(OpenAICompatProvider):
                                'repeat_penalty', 'top_k')}
         result = super()._transform_params_for_model(params)
 
-        # reasoning_effort controls thinking depth (2.5+ models). Do not also
-        # send thinking_level / thinking_budget — Google rejects that overlap.
-        # include_thoughts only works on gemini-3+, and only inside the
-        # literal extra_body field the compat endpoint documents.
+        # Gemini 3 rejects reasoning_effort together with thinking_config
+        # ("found both"). Depth and thought summaries go in thinking_config
+        # only. Gemini 2.5 has no thinking_config on this endpoint, so it
+        # keeps reasoning_effort.
         model_lower = (self.model or '').lower()
         if self._thinking_enabled and any(model_lower.startswith(p) for p in GEMINI_THINKING_PREFIXES):
-            result['reasoning_effort'] = self._reasoning_effort
             if model_lower.startswith('gemini-3'):
+                level = self._reasoning_effort if self._reasoning_effort in GEMINI_3_LEVELS else 'medium'
                 result['extra_body'] = {
                     "extra_body": {
                         "google": {
-                            "thinking_config": {"include_thoughts": True}
+                            "thinking_config": {
+                                "thinking_level": level,
+                                "include_thoughts": True,
+                            }
                         }
                     }
                 }
+            else:
+                result['reasoning_effort'] = self._reasoning_effort
             logger.info(f"[GEMINI] Thinking enabled (effort={self._reasoning_effort}) for {self.model}")
 
         return result
