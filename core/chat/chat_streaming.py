@@ -764,6 +764,10 @@ class StreamingChat:
                                 tool_calls[idx]["function"]["name"] = event["name"]
                             if event.get("arguments"):
                                 tool_calls[idx]["function"]["arguments"] = event["arguments"]
+                            # Gemini 3 rejects the follow-up tool result unless
+                            # this block rides back on the same function call.
+                            if event.get("extra_content"):
+                                tool_calls[idx]["extra_content"] = event["extra_content"]
 
                             # Early UI hint: show accordion as soon as we know the tool name
                             # Only for indices within MAX_PARALLEL_TOOLS — excess tools won't execute

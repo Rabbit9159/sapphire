@@ -131,10 +131,14 @@ class ToolCall:
     id: str
     name: str
     arguments: str  # JSON string
+    # Gemini 3/4 function calls carry this opaque block
+    # (extra_content.google.thought_signature). The next request in the
+    # same turn 400s if it is missing. Absent for every other provider.
+    extra_content: Optional[Dict[str, Any]] = None
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to OpenAI-style dict format (used internally)."""
-        return {
+        out = {
             "id": self.id,
             "type": "function",
             "function": {
@@ -142,6 +146,9 @@ class ToolCall:
                 "arguments": self.arguments
             }
         }
+        if self.extra_content:
+            out["extra_content"] = self.extra_content
+        return out
 
 
 @dataclass

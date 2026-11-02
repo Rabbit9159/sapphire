@@ -8,6 +8,11 @@ Gemini 3 thinking uses extra_body.google.thinking_config instead.
 Google rejects a request that contains both, and it rejects a top-level
 `google` field. The OpenAI SDK merges its extra_body kwarg into the JSON
 root, so the google block is nested once more here.
+
+Gemini 3 function calls also return extra_content.google.thought_signature.
+That block is captured on the tool call and sent back by
+OpenAICompatProvider._sanitize_messages. Dropping it makes the tool
+result request 400.
 """
 
 import logging

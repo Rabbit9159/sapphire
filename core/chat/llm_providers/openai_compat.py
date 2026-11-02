@@ -89,6 +89,39 @@ PENALTY_PARAMS = ('presence_penalty', 'frequency_penalty', 'repeat_penalty', 'to
 _REJECTED_PARAMS: Dict[str, set] = {}
 
 
+def gemini_thought_extra(obj: Any) -> Optional[Dict[str, Any]]:
+    """Pull Gemini's thought_signature off a tool call, if one is present.
+
+    Gemini 3 and 4 put it on the OpenAI-compat tool call as
+    extra_content.google.thought_signature. The OpenAI SDK keeps that
+    unknown field because its models allow extras. The next request in
+    the same turn must send the block back unchanged or Google returns
+    400 "Function call is missing a thought_signature".
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        raw = obj.get("extra_content")
+        direct = obj.get("thought_signature")
+    else:
+        raw = getattr(obj, "extra_content", None)
+        direct = getattr(obj, "thought_signature", None)
+        if raw is None and direct is None:
+            extra = getattr(obj, "model_extra", None) or {}
+            if isinstance(extra, dict):
+                raw = extra.get("extra_content")
+                direct = extra.get("thought_signature")
+    if isinstance(raw, dict):
+        google = raw.get("google")
+        if isinstance(google, dict):
+            sig = google.get("thought_signature")
+            if isinstance(sig, str) and sig:
+                return {"google": {"thought_signature": sig}}
+    if isinstance(direct, str) and direct:
+        return {"google": {"thought_signature": direct}}
+    return None
+
+
 def _notify(message: str, severity: str = 'warning') -> None:
     """Surface a provider notice as a UI toast (best effort, never raises)."""
     try:
@@ -423,6 +456,18 @@ class OpenAICompatProvider(BaseProvider):
                 maybe_llm_proxy_hint(self.config.get('display_name') or self.provider_name, str(e2))
                 raise
     
+    def _echo_gemini_thought_signature(self) -> bool:
+        """True when this request is going to a Gemini endpoint that
+        requires thought signatures on tool calls."""
+        provider = (self.config.get('provider') or '').lower()
+        model = (self.model or '').lower()
+        base = (self.base_url or '').lower()
+        return (
+            provider == 'gemini'
+            or model.startswith('gemini-')
+            or 'generativelanguage.googleapis.com' in base
+        )
+
     def _sanitize_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Sanitize messages for OpenAI-compatible APIs.
@@ -566,6 +611,12 @@ class OpenAICompatProvider(BaseProvider):
                                 'arguments': args
                             }
                         }
+                        # Gemini 3/4 validate this on the current turn's
+                        # function calls. Other hosts never sent it, and a
+                        # strict local server can 400 on the unknown key.
+                        thought = gemini_thought_extra(tc) if self._echo_gemini_thought_signature() else None
+                        if thought:
+                            normalized_tc['extra_content'] = thought
                         normalized_calls.append(normalized_tc)
                 if normalized_calls:
                     clean_msg['tool_calls'] = normalized_calls
@@ -886,18 +937,25 @@ class OpenAICompatProvider(BaseProvider):
                         tool_calls_acc[idx]["name"] = tc_delta.function.name
                     if tc_delta.function and tc_delta.function.arguments:
                         tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
+                    thought = gemini_thought_extra(tc_delta)
+                    if thought:
+                        tool_calls_acc[idx]["extra_content"] = thought
                     
-                    yield {
+                    event = {
                         "type": "tool_call",
                         "index": idx,
                         "id": tool_calls_acc[idx]["id"],
                         "name": tool_calls_acc[idx]["name"],
                         "arguments": tool_calls_acc[idx]["arguments"]
                     }
+                    if tool_calls_acc[idx].get("extra_content"):
+                        event["extra_content"] = tool_calls_acc[idx]["extra_content"]
+                    yield event
         
         # Build final response
         final_tool_calls = [
-            ToolCall(id=tc["id"], name=tc["name"], arguments=tc["arguments"])
+            ToolCall(id=tc["id"], name=tc["name"], arguments=tc["arguments"],
+                     extra_content=tc.get("extra_content"))
             for tc in tool_calls_acc
             if tc["id"] and tc["name"]
         ]
@@ -951,7 +1009,8 @@ class OpenAICompatProvider(BaseProvider):
                 tool_calls.append(ToolCall(
                     id=tc.id,
                     name=tc.function.name,
-                    arguments=tc.function.arguments
+                    arguments=tc.function.arguments,
+                    extra_content=gemini_thought_extra(tc),
                 ))
         
         # Parse usage if present
