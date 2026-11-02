@@ -21,6 +21,7 @@ from core import prompts
 # write silently reverted the first (scouts S15/F10, 2026-09-20).
 _PROVIDER_MAP_LOCK = threading.Lock()
 from core.fs_utils import replace_with_retry
+from core.llm_error import clean_llm_error as _clean_llm_error
 
 logger = logging.getLogger(__name__)
 
@@ -995,7 +996,7 @@ async def test_llm_provider(provider_key: str, request: Request, _=Depends(requi
                         generation_params=gen)
                     return {"status": "success", "response": f"Completion OK ({model}){budget_note}{disabled_note}"}
                 except Exception as e:
-                    return {"status": "error", "error": f"Completion failed — this is the call replies use: {str(e)[:160]}"}
+                    return {"status": "error", "error": f"Completion failed — this is the call replies use: {_clean_llm_error(e)}"}
 
             if health.get('ok'):
                 return {"status": "success", "response": f"Endpoint reachable (no model set — completion untested){disabled_note}"}
@@ -1012,17 +1013,6 @@ async def test_llm_provider(provider_key: str, request: Request, _=Depends(requi
 _THINKING_PROBE = ("Reason through this step by step using your thinking, then give a "
                    "one-line final answer: is 91 a prime number?")
 _THINK_TAG_RE = re.compile(r'<think>(.*?)</think>', re.DOTALL | re.IGNORECASE)
-
-
-def _clean_llm_error(e) -> str:
-    """Pull the useful message out of an LLM/HTTP error (esp. OpenAI-client 400s)."""
-    body = getattr(e, 'body', None)
-    if isinstance(body, dict):
-        inner = body.get('error') if isinstance(body.get('error'), dict) else body
-        msg = (inner or {}).get('message')
-        if msg:
-            return str(msg)[:250]
-    return str(e)[:250]
 
 
 def _analyze_thinking(resp) -> dict:

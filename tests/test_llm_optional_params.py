@@ -76,6 +76,50 @@ def test_gemini_drops_local_knobs_before_the_lift():
     assert out == {"temperature": 0.5}
 
 
+def _gemini(model, thinking_enabled=True, effort="medium"):
+    return GeminiProvider({
+        "provider": "gemini",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "api_key": "k",
+        "model": model,
+        "thinking_enabled": thinking_enabled,
+        "reasoning_effort": effort,
+    })
+
+
+def test_gemini3_nests_thoughts_so_google_is_not_a_top_level_field():
+    """Dropdown ids (gemini-3.8-flash and the rest) take this path. The
+    Python SDK spreads extra_body onto the JSON root, and Google's compat
+    endpoint 400s a root field named google. The documented shape is a
+    literal extra_body.google object, so the kwarg is nested once more.
+    reasoning_effort stays; thinking_level would collide with it."""
+    out = _gemini("gemini-3.8-flash")._transform_params_for_model(
+        {"temperature": 0.7, "max_tokens": 8192})
+    assert out["reasoning_effort"] == "medium"
+    google = out["extra_body"]["extra_body"]["google"]
+    assert google == {"thinking_config": {"include_thoughts": True}}
+    assert "google" not in out["extra_body"]
+
+
+def test_custom_gemini3_id_uses_the_same_nested_shape():
+    out = _gemini("gemini-3.5-flash", effort="low")._transform_params_for_model({})
+    assert out["reasoning_effort"] == "low"
+    assert "google" not in out["extra_body"]
+    assert out["extra_body"]["extra_body"]["google"]["thinking_config"]["include_thoughts"] is True
+
+
+def test_gemini25_sets_effort_without_the_google_block():
+    out = _gemini("gemini-2.5-flash")._transform_params_for_model({"temperature": 0.7})
+    assert out["reasoning_effort"] == "medium"
+    assert "extra_body" not in out
+
+
+def test_gemini_thinking_off_sends_neither_effort_nor_google():
+    out = _gemini("gemini-3.8-flash", thinking_enabled=False)._transform_params_for_model(
+        {"temperature": 0.7})
+    assert "reasoning_effort" not in out and "extra_body" not in out
+
+
 # ── learn-once refusal ───────────────────────────────────────────────────────
 
 def test_refused_param_is_stripped_retried_and_remembered(monkeypatch):

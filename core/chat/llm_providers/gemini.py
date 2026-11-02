@@ -3,9 +3,12 @@
 Google Gemini provider via OpenAI-compatible endpoint.
 
 Strips unsupported params (penalties, stop).
-For thinking models (2.5+), injects reasoning_effort and
-include_thoughts so thinking comes back as reasoning_content
-on deltas — which openai_compat already reads.
+For thinking models (2.5+), injects reasoning_effort.
+For Gemini 3+, also asks for thought summaries. Those ride a literal
+`extra_body.google` field on the wire — the OpenAI SDK merges its
+`extra_body` kwarg into the JSON root, so the block is nested once
+more here. A top-level `google` field is rejected with
+400 Unknown name "google": Cannot find field.
 """
 
 import logging
@@ -39,15 +42,20 @@ class GeminiProvider(OpenAICompatProvider):
                                'repeat_penalty', 'top_k')}
         result = super()._transform_params_for_model(params)
 
-        # reasoning_effort controls thinking depth (2.5+ models)
-        # include_thoughts (extra_body.google) only works on gemini-3+
+        # reasoning_effort controls thinking depth (2.5+ models). Do not also
+        # send thinking_level / thinking_budget — Google rejects that overlap.
+        # include_thoughts only works on gemini-3+, and only inside the
+        # literal extra_body field the compat endpoint documents.
         model_lower = (self.model or '').lower()
         if self._thinking_enabled and any(model_lower.startswith(p) for p in GEMINI_THINKING_PREFIXES):
             result['reasoning_effort'] = self._reasoning_effort
-            # gemini-3+ supports include_thoughts to return thinking in response
             if model_lower.startswith('gemini-3'):
                 result['extra_body'] = {
-                    "google": {"thinking_config": {"include_thoughts": True}}
+                    "extra_body": {
+                        "google": {
+                            "thinking_config": {"include_thoughts": True}
+                        }
+                    }
                 }
             logger.info(f"[GEMINI] Thinking enabled (effort={self._reasoning_effort}) for {self.model}")
 
